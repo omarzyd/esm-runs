@@ -24,8 +24,8 @@ import torch.nn.functional as F
 # ----------------------------------------------------------------------------------------------
 # Run list (fixed; every worker uses the same list)                                        # GLUE
 # ----------------------------------------------------------------------------------------------
-ARMS_B = ["erm", "hedjitter", "random13", "cmamae", "mapelites", "cmaes_hard",
-          "ga", "de", "pso", "abc", "acor", "gwo"]
+ARMS_B = ["cmamae", "ga", "erm", "hedjitter", "random13", "mapelites", "cmaes_hard",
+          "de", "pso", "abc", "acor", "gwo"]
 SEEDS_B = [0, 1, 2, 3, 4]
 ARMS_C = ["erm", "hedjitter", "random13", "cmamae"]
 SEEDS_C = [0, 1, 2]

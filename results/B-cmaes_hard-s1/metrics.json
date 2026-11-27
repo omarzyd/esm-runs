@@ -1,0 +1,57 @@
+{
+ "run_id": "B-cmaes_hard-s1",
+ "exp": "B",
+ "arm": "cmaes_hard",
+ "seed": 1,
+ "arch": "resnet18_imagenet",
+ "test_acc": 0.9075528487784231,
+ "val_acc": 0.9346,
+ "best_epoch": 4,
+ "test_auc": 0.9723352980808151,
+ "worst_slide_acc": 0.7698163553602261,
+ "slide_acc": {
+  "20": 0.9887139107611549,
+  "21": 0.9510016242555496,
+  "22": 0.8803051317614424,
+  "23": 0.9245461422087746,
+  "24": 0.9295975152064191,
+  "25": 0.9674665436086756,
+  "26": 0.9129750982961992,
+  "27": 0.9848551360842844,
+  "28": 0.9260304912478825,
+  "29": 0.7698163553602261
+ },
+ "minutes": 2.29,
+ "search_minutes": 0.27,
+ "final_pool": 32,
+ "arm_stats": {
+  "pool": 32,
+  "cells": 18,
+  "coverage": 0.07
+ },
+ "cfg": {
+  "arch": "resnet18_imagenet",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.01,
+  "wd": 0.0001,
+  "train_key": "train"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 200,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

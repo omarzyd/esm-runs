@@ -1,0 +1,55 @@
+{
+ "run_id": "B-pso-s1",
+ "exp": "B",
+ "arm": "pso",
+ "seed": 1,
+ "arch": "resnet18_imagenet",
+ "test_acc": 0.9279163825334493,
+ "val_acc": 0.9385,
+ "best_epoch": 4,
+ "test_auc": 0.97888468154957,
+ "worst_slide_acc": 0.8570867995605086,
+ "slide_acc": {
+  "20": 0.9960629921259843,
+  "21": 0.9702219815917704,
+  "22": 0.8674063800277393,
+  "23": 0.9392965204236006,
+  "24": 0.9474569690694966,
+  "25": 0.9794646977388094,
+  "26": 0.9009174311926605,
+  "27": 0.9896839332748024,
+  "28": 0.937637241985068,
+  "29": 0.8570867995605086
+ },
+ "minutes": 2.4,
+ "search_minutes": 0.38,
+ "final_pool": 32,
+ "arm_stats": {
+  "pool": 32
+ },
+ "cfg": {
+  "arch": "resnet18_imagenet",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.01,
+  "wd": 0.0001,
+  "train_key": "train"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 200,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

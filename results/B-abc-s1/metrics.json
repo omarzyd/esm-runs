@@ -1,0 +1,55 @@
+{
+ "run_id": "B-abc-s1",
+ "exp": "B",
+ "arm": "abc",
+ "seed": 1,
+ "arch": "resnet18_imagenet",
+ "test_acc": 0.9297505114397911,
+ "val_acc": 0.9426,
+ "best_epoch": 4,
+ "test_auc": 0.9768435811002931,
+ "worst_slide_acc": 0.8621716060566843,
+ "slide_acc": {
+  "20": 0.9834645669291339,
+  "21": 0.9206821873308068,
+  "22": 0.8761442441054091,
+  "23": 0.9512102874432677,
+  "24": 0.8621716060566843,
+  "25": 0.935163820950623,
+  "26": 0.8857142857142857,
+  "27": 0.9571992976294995,
+  "28": 0.9566785871133697,
+  "29": 0.9128865170302936
+ },
+ "minutes": 3.09,
+ "search_minutes": 1.09,
+ "final_pool": 32,
+ "arm_stats": {
+  "pool": 32
+ },
+ "cfg": {
+  "arch": "resnet18_imagenet",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.01,
+  "wd": 0.0001,
+  "train_key": "train"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

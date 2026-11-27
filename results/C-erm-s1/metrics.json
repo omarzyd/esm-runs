@@ -1,0 +1,55 @@
+{
+ "run_id": "C-erm-s1",
+ "exp": "C",
+ "arm": "erm",
+ "seed": 1,
+ "arch": "densenet121_scratch",
+ "test_acc": 0.579314317962706,
+ "val_acc": 0.7182,
+ "best_epoch": 4,
+ "test_auc": 0.6464241529830845,
+ "worst_slide_acc": 0.34854758767802246,
+ "slide_acc": {
+  "20": 0.9309711286089238,
+  "21": 0.8941526800216567,
+  "22": 0.7656033287101248,
+  "23": 0.46180030257186083,
+  "24": 0.904878995729261,
+  "25": 0.7023534840793724,
+  "26": 0.8193971166448231,
+  "27": 0.9433713784021072,
+  "28": 0.34854758767802246,
+  "29": 0.4622508240464605
+ },
+ "minutes": 61.03,
+ "search_minutes": 0.0,
+ "final_pool": 0,
+ "arm_stats": {
+  "pool": 0
+ },
+ "cfg": {
+  "arch": "densenet121_scratch",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.004,
+  "wd": 0.01,
+  "train_key": "trainfull"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

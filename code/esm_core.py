@@ -50,7 +50,7 @@ CFG = {
     "C": dict(arch="densenet121_scratch", epochs=5, batch=128, lr=0.004, wd=1e-2, train_key="trainfull"),
     "views": 2,            # archive views per patch per step (augmenting arms)
     "clean_frac": 0.25,    # share of views left clean
-    "budget": 200,         # new candidate evaluations per archive update (every arm)
+    "budget": 600,         # new candidate evaluations per archive update (every arm; raised from 200 after the first real runs: map coverage 9%)
     "probe": 64,           # probe patches per candidate (same batch for all candidates of an update)
     "pool_k": 32,          # pool size for hardest-only arms
     "grid": (16, 16),

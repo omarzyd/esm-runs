@@ -1,0 +1,57 @@
+{
+ "run_id": "C-cmamae-s2",
+ "exp": "C",
+ "arm": "cmamae",
+ "seed": 2,
+ "arch": "densenet121_scratch",
+ "test_acc": 0.7856655771627437,
+ "val_acc": 0.9231,
+ "best_epoch": 4,
+ "test_auc": 0.9082165428065877,
+ "worst_slide_acc": 0.5235441845864072,
+ "slide_acc": {
+  "20": 0.9874015748031496,
+  "21": 0.9810503519220357,
+  "22": 0.9034674063800278,
+  "23": 0.7248487140695915,
+  "24": 0.9591044389801993,
+  "25": 0.7731887401938163,
+  "26": 0.8631716906946265,
+  "27": 0.9736611062335382,
+  "28": 0.7506430767300333,
+  "29": 0.5235441845864072
+ },
+ "minutes": 52.14,
+ "search_minutes": 2.01,
+ "final_pool": 62,
+ "arm_stats": {
+  "pool": 62,
+  "cells": 62,
+  "coverage": 0.242
+ },
+ "cfg": {
+  "arch": "densenet121_scratch",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.004,
+  "wd": 0.01,
+  "train_key": "trainfull"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

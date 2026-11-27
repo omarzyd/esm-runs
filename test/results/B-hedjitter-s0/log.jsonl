@@ -1,2 +1,0 @@
-{"epoch": 0, "train_loss": 0.4635102649529775, "val_acc_ema": 0.5, "sec": 3, "search_sec": 0, "pool": 0}
-{"epoch": 1, "train_loss": 0.14019177729884783, "val_acc_ema": 0.5, "sec": 6, "search_sec": 0, "pool": 0}

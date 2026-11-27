@@ -1,0 +1,55 @@
+{
+ "run_id": "B-acor-s4",
+ "exp": "B",
+ "arm": "acor",
+ "seed": 4,
+ "arch": "resnet18_imagenet",
+ "test_acc": 0.8639687727796459,
+ "val_acc": 0.9269,
+ "best_epoch": 2,
+ "test_auc": 0.9658972974744173,
+ "worst_slide_acc": 0.6819965468529273,
+ "slide_acc": {
+  "20": 0.9918635170603675,
+  "21": 0.9780725500812127,
+  "22": 0.7889042995839113,
+  "23": 0.9105521936459909,
+  "24": 0.955221949009965,
+  "25": 0.978772496538994,
+  "26": 0.8815203145478375,
+  "27": 0.9916593503072871,
+  "28": 0.8593700985005333,
+  "29": 0.6819965468529273
+ },
+ "minutes": 3.04,
+ "search_minutes": 1.06,
+ "final_pool": 32,
+ "arm_stats": {
+  "pool": 32
+ },
+ "cfg": {
+  "arch": "resnet18_imagenet",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.01,
+  "wd": 0.0001,
+  "train_key": "train"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

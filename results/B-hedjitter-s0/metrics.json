@@ -1,0 +1,55 @@
+{
+ "run_id": "B-hedjitter-s0",
+ "exp": "B",
+ "arm": "hedjitter",
+ "seed": 0,
+ "arch": "resnet18_imagenet",
+ "test_acc": 0.7914266230865098,
+ "val_acc": 0.9216,
+ "best_epoch": 1,
+ "test_auc": 0.9572937948089894,
+ "worst_slide_acc": 0.5647465076126197,
+ "slide_acc": {
+  "20": 0.9916010498687664,
+  "21": 0.9907958852192745,
+  "22": 0.6902912621359223,
+  "23": 0.8653555219364599,
+  "24": 0.964281092273845,
+  "25": 0.975311490539917,
+  "26": 0.8765399737876802,
+  "27": 0.9881474978050921,
+  "28": 0.7404165882426752,
+  "29": 0.5647465076126197
+ },
+ "minutes": 1.37,
+ "search_minutes": 0.0,
+ "final_pool": 0,
+ "arm_stats": {
+  "pool": 0
+ },
+ "cfg": {
+  "arch": "resnet18_imagenet",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.01,
+  "wd": 0.0001,
+  "train_key": "train"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 200,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

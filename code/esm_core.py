@@ -31,6 +31,7 @@ ARMS_C = ["erm", "hedjitter", "random13", "cmamae"]
 SEEDS_C = [0, 1, 2]
 RUNS_B = [f"B-{a}-s{s}" for s in SEEDS_B for a in ARMS_B]    # dev track (ResNet-18 ImageNet, subset)
 RUNS_C = [f"C-{a}-s{s}" for s in SEEDS_C for a in ARMS_C]    # official-style track (DenseNet-121 scratch, full)
+RUNS_C += [f"C-{a}-s{s}" for s in (3, 4) for a in ("cmamae", "random13", "hedjitter")]   # added 28 Nov 2026: 2 more seeds for the 3 augmentation arms (ERM: 3 seeds, collapsed); all seeds reported
 
 
 def parse_run(run_id):

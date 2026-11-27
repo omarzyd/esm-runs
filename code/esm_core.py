@@ -629,16 +629,26 @@ RESULT_FILES = ("metrics.json", "log.jsonl", "preds_test.npz", "pool_final.npy")
 STALE_MIN = {"B": 40, "C": 240}       # a claim older than this with no result is taken over
 
 
+_SECRETS = []
+
+
+def _scrub(text):
+    for t in _SECRETS:
+        text = text.replace(t, "***")
+    return text
+
+
 def _git(cwd, *args, check=True):
     r = __import__("subprocess").run(["git", *args], cwd=cwd, capture_output=True, text=True)
     if check and r.returncode != 0:
-        raise RuntimeError(f"git {args[0]} failed: {r.stderr.strip()[-300:]}")
+        raise RuntimeError(_scrub(f"git {args[0]} failed: {r.stderr.strip()[-300:]}"))
     return r
 
 
 class Queue:
     def __init__(self, repo, token, clone_dir, worker, ns=""):
         self.repo, self.token, self.dir, self.worker, self.ns = repo, token, clone_dir, worker, ns
+        _SECRETS.append(token)
         url = f"https://x-access-token:{token}@github.com/{repo}.git"
         if not os.path.exists(os.path.join(clone_dir, ".git")):
             _git(".", "clone", "--quiet", url, clone_dir)

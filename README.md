@@ -1,4 +1,4 @@
-# esm-runs (private)
+# esm-runs
 
 Run queue, results and model weights for **Evolving the Stain Map** (quality-diversity stain/scanner augmentation, Camelyon17-WILDS).
 

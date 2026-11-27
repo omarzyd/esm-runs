@@ -1,0 +1,55 @@
+{
+ "run_id": "B-erm-s2",
+ "exp": "B",
+ "arm": "erm",
+ "seed": 2,
+ "arch": "resnet18_imagenet",
+ "test_acc": 0.8641098596185952,
+ "val_acc": 0.9063,
+ "best_epoch": 1,
+ "test_auc": 0.9679368599476537,
+ "worst_slide_acc": 0.7457697642163662,
+ "slide_acc": {
+  "20": 0.9939632545931758,
+  "21": 0.9791553871142393,
+  "22": 0.7457697642163662,
+  "23": 0.8734871406959153,
+  "24": 0.954186618351236,
+  "25": 0.977618827872635,
+  "26": 0.8726081258191349,
+  "27": 0.9868305531167691,
+  "28": 0.8417090156220591,
+  "29": 0.7713859676659865
+ },
+ "minutes": 6.04,
+ "search_minutes": 0.0,
+ "final_pool": 0,
+ "arm_stats": {
+  "pool": 0
+ },
+ "cfg": {
+  "arch": "resnet18_imagenet",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.01,
+  "wd": 0.0001,
+  "train_key": "train"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

@@ -1,0 +1,62 @@
+{
+ "run_id": "F0-r13_stain-s1",
+ "exp": "F0",
+ "arm": "r13_stain",
+ "seed": 1,
+ "arch": "resnet18_imagenet",
+ "test_acc": 0.9519138979878334,
+ "val_acc": 0.9264,
+ "best_epoch": 4,
+ "test_auc": 0.987122142880833,
+ "worst_slide_acc": 0.8854601056435919,
+ "slide_acc": {
+  "0": 0.9729241877256317,
+  "1": 0.9777185759263745,
+  "2": 0.8854601056435919,
+  "3": 0.9782466470395813,
+  "4": 0.9689299787814489,
+  "5": 0.9074262461851476,
+  "6": 0.9620622568093385,
+  "7": 0.9706293706293706,
+  "8": 0.934477636573692,
+  "9": 0.9229642647920328
+ },
+ "minutes": 2.53,
+ "search_minutes": 0.65,
+ "final_pool": 553,
+ "arm_stats": {
+  "pool": 553
+ },
+ "target_coverage": {
+  "cov_aug": 0.228,
+  "cov_clean": 0.326,
+  "k": 5,
+  "n": 1000
+ },
+ "cfg": {
+  "arch": "resnet18_imagenet",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.01,
+  "wd": 0.0001,
+  "train_key": "fold"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ },
+ "code": "fb3b75e3b1d1"
+}

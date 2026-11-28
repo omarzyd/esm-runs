@@ -1,0 +1,55 @@
+{
+ "run_id": "C-hedjitter-s3",
+ "exp": "C",
+ "arm": "hedjitter",
+ "seed": 3,
+ "arch": "densenet121_scratch",
+ "test_acc": 0.5678510122980694,
+ "val_acc": 0.9085,
+ "best_epoch": 4,
+ "test_auc": 0.5808602033971574,
+ "worst_slide_acc": 0.2785933872890395,
+ "slide_acc": {
+  "20": 0.9800524934383202,
+  "21": 0.9726583649160802,
+  "22": 0.7335644937586685,
+  "23": 0.4718229954614221,
+  "24": 0.956127863336353,
+  "25": 0.7514997692662667,
+  "26": 0.8495412844036697,
+  "27": 0.9697102721685689,
+  "28": 0.2785933872890395,
+  "29": 0.4710406529587192
+ },
+ "minutes": 82.37,
+ "search_minutes": 0.0,
+ "final_pool": 0,
+ "arm_stats": {
+  "pool": 0
+ },
+ "cfg": {
+  "arch": "densenet121_scratch",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.004,
+  "wd": 0.01,
+  "train_key": "trainfull"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ }
+}

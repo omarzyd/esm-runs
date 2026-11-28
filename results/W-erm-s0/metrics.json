@@ -1,0 +1,68 @@
+{
+ "run_id": "W-erm-s0",
+ "exp": "W",
+ "arm": "erm",
+ "seed": 0,
+ "arch": "densenet121_scratch",
+ "test_acc": 0.6841065675923531,
+ "val_acc": 0.8438,
+ "best_epoch": 2,
+ "test_auc": 0.7472543922056393,
+ "worst_slide_acc": 0.47818238894992937,
+ "slide_acc": {
+  "20": 0.9398950131233595,
+  "21": 0.9082295614510016,
+  "22": 0.6884882108183079,
+  "23": 0.4807110438729198,
+  "24": 0.9026789180794617,
+  "25": 0.7489616982002769,
+  "26": 0.8411533420707733,
+  "27": 0.9209833187006146,
+  "28": 0.6281761716544325,
+  "29": 0.47818238894992937
+ },
+ "minutes": 53.87,
+ "search_minutes": 0.0,
+ "final_pool": 0,
+ "arm_stats": {
+  "pool": 0
+ },
+ "target_coverage": {
+  "cov_aug": 0.249,
+  "cov_clean": 0.249,
+  "k": 5,
+  "n": 1000
+ },
+ "cfg": {
+  "arch": "densenet121_scratch",
+  "epochs": 10,
+  "batch": 128,
+  "lr": 0.0039,
+  "wd": 0.01,
+  "train_key": "trainfull",
+  "nesterov": false,
+  "sched": "const",
+  "ema_eval": false,
+  "views": 1,
+  "geo": false,
+  "test_each_epoch": true
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ },
+ "code": "fb3b75e3b1d1"
+}

@@ -1,0 +1,5 @@
+{"epoch": 0, "train_loss": 0.19894807048617524, "val_acc_ema": 0.8048, "sec": 8, "search_sec": 0, "pool": 0}
+{"epoch": 1, "train_loss": 0.08851804527989093, "val_acc_ema": 0.8913, "sec": 17, "search_sec": 0, "pool": 0}
+{"epoch": 2, "train_loss": 0.0673523486136122, "val_acc_ema": 0.9344, "sec": 25, "search_sec": 0, "pool": 0}
+{"epoch": 3, "train_loss": 0.0537497397432936, "val_acc_ema": 0.9466, "sec": 34, "search_sec": 0, "pool": 0}
+{"epoch": 4, "train_loss": 0.04210816198920316, "val_acc_ema": 0.9506, "sec": 43, "search_sec": 0, "pool": 0}

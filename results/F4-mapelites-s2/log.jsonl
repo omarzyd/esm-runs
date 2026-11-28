@@ -1,0 +1,5 @@
+{"epoch": 0, "train_loss": 0.20023414181902052, "val_acc_ema": 0.6949, "sec": 15, "search_sec": 0, "pool": 0, "cells": 0, "coverage": 0.0}
+{"epoch": 1, "train_loss": 0.12195315957069397, "val_acc_ema": 0.8504, "sec": 48, "search_sec": 9, "pool": 14, "cells": 14, "coverage": 0.055}
+{"epoch": 2, "train_loss": 0.09954245499473938, "val_acc_ema": 0.8949, "sec": 80, "search_sec": 19, "pool": 28, "cells": 28, "coverage": 0.109}
+{"epoch": 3, "train_loss": 0.08579686945106121, "val_acc_ema": 0.9504, "sec": 113, "search_sec": 29, "pool": 32, "cells": 32, "coverage": 0.125}
+{"epoch": 4, "train_loss": 0.08458368549163037, "val_acc_ema": 0.9514, "sec": 146, "search_sec": 39, "pool": 40, "cells": 40, "coverage": 0.156}

@@ -1,0 +1,64 @@
+{
+ "run_id": "B2-cmamae_x0-s0",
+ "exp": "B2",
+ "arm": "cmamae_x0",
+ "seed": 0,
+ "arch": "resnet18_imagenet",
+ "test_acc": 0.9020034331130811,
+ "val_acc": 0.9385,
+ "best_epoch": 3,
+ "test_auc": 0.9754316485961522,
+ "worst_slide_acc": 0.7234343117250039,
+ "slide_acc": {
+  "20": 0.9937007874015747,
+  "21": 0.9805089334055225,
+  "22": 0.8819694868238558,
+  "23": 0.958963691376702,
+  "24": 0.9523747896984599,
+  "25": 0.9792339640055376,
+  "26": 0.9003931847968545,
+  "27": 0.9938542581211589,
+  "28": 0.9127611518915867,
+  "29": 0.7234343117250039
+ },
+ "minutes": 2.67,
+ "search_minutes": 0.79,
+ "final_pool": 30,
+ "arm_stats": {
+  "pool": 30,
+  "cells": 30,
+  "coverage": 0.117
+ },
+ "target_coverage": {
+  "cov_aug": 0.248,
+  "cov_clean": 0.22,
+  "k": 5,
+  "n": 1000
+ },
+ "cfg": {
+  "arch": "resnet18_imagenet",
+  "epochs": 5,
+  "batch": 128,
+  "lr": 0.01,
+  "wd": 0.0001,
+  "train_key": "train"
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ },
+ "code": "fb3b75e3b1d1"
+}

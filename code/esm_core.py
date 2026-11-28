@@ -15,7 +15,7 @@ Sources (official code and docs this file adapts):
 GLUE (custom code, flagged with "# GLUE"): the genome decoder, descriptors and realism bounds, archive
 re-scoring, the exact evaluation budget, the run list and the worker split.
 """
-import argparse, copy, glob, hashlib, json, math, os, random, time
+import argparse, copy, glob, hashlib, json, math, os, random, subprocess, sys, time, traceback
 import numpy as np
 import torch
 import torch.nn as nn
@@ -34,9 +34,27 @@ RUNS_C = [f"C-{a}-s{s}" for s in SEEDS_C for a in ARMS_C]    # official-style tr
 RUNS_C += [f"C-{a}-s{s}" for s in (3, 4) for a in ("cmamae", "random13", "hedjitter")]   # added 28 Nov 2026: 2 more seeds for the 3 augmentation arms (ERM: 3 seeds, collapsed); all seeds reported
 
 
+RUNS_B2, RUNS_F, RUNS_W = [], [], []        # v3 tracks (REVIEW_AND_PLAN_V3.md), filled in stage 2
+
+
+def run_lists():
+    """Run lists by family; a worker's plan is the concatenation in the order given by --exps."""
+    return {"B": RUNS_B, "C": RUNS_C, "B2": RUNS_B2, "F": RUNS_F, "W": RUNS_W}
+
+
 def parse_run(run_id):
     exp, arm, s = run_id.split("-")
     return exp, arm, int(s[1:])
+
+
+def family(exp):
+    """F0..F4 (rotation folds) -> F; every other experiment name is its own family."""
+    return "F" if exp[:1] == "F" and exp[1:].isdigit() else exp
+
+
+def cfg_key(exp):
+    """Which CFG entry an experiment uses (B2 = Track B recipe with new arms)."""
+    return {"B2": "B"}.get(family(exp), family(exp))
 
 
 def worker_share(runs, worker_id, n_workers):
@@ -526,7 +544,7 @@ def run_one(run_id, data, out_root, device, smoke=False):
     if os.path.exists(os.path.join(out, "metrics.json")):
         print("skip (done)", run_id, flush=True); return
     os.makedirs(out, exist_ok=True)
-    cfg = dict(CFG[exp]); set_seed(seed)
+    cfg = dict(CFG[cfg_key(exp)]); set_seed(seed)
     tr, va, te = data["train"], data["val"], data["test"]
     if smoke: cfg.update(epochs=2, batch=32)
     rng = np.random.default_rng(seed)
@@ -600,7 +618,7 @@ def run_one(run_id, data, out_root, device, smoke=False):
                "worst_slide_acc": min(slides.values()), "slide_acc": slides,
                "minutes": round((time.time() - t_start) / 60, 2), "search_minutes": round(search_sec / 60, 2),
                "final_pool": int(len(arm.pool)), "arm_stats": arm.stats(), "cfg": cfg, "shared_cfg":
-               {k: v for k, v in CFG.items() if k not in ("B", "C")}}
+               {k: v for k, v in CFG.items() if not isinstance(v, dict)}, "code": LOADED_HASH}
     np.savez_compressed(os.path.join(out, "preds_test.npz"), prob=pt.astype(np.float16),
                         y=te["y"].astype(np.int8), slide=te["slide"].astype(np.int16))
     np.save(os.path.join(out, "pool_final.npy"), arm.pool)
@@ -610,13 +628,28 @@ def run_one(run_id, data, out_root, device, smoke=False):
     print("DONE", run_id, "test_acc=%.4f val_acc=%.4f" % (acc, best[0]), flush=True)
 
 
+def warm(x, step=1 << 28):                                                               # GLUE
+    """Read a memory-mapped array once, in file order, so that later random access hits the page cache.
+    (np.ascontiguousarray on a contiguous memmap is a no-op, which made every fresh session's first
+    epoch about 40 min slower: random reads from the attached dataset.)"""
+    if not isinstance(x, np.memmap):
+        return
+    t0, flat = time.time(), x.reshape(-1)
+    for i in range(0, flat.size, step):
+        int(flat[i:i + step][::4096].sum())                   # touch every 4 KB page
+    print(f"warmed {x.nbytes / 1e9:.1f} GB in {time.time() - t0:.0f} s", flush=True)
+
+
 def load_all(data_dir, exp, device, smoke=False):
     if smoke:
         tr, va, te = smoke_data()
     else:
-        key = CFG[exp]["train_key"]
+        key = CFG[cfg_key(exp)]["train_key"]
         tr = load_split(data_dir, key); va = load_split(data_dir, "val"); te = load_split(data_dir, "test")
-        tr["x"] = np.ascontiguousarray(tr["x"])     # into RAM for fast random access
+        for s in (tr, va, te):
+            warm(s["x"])
+        if tr["x"].nbytes < 2e9:
+            tr["x"] = np.array(tr["x"])                       # small sets: a real copy into RAM
     return {"train": tr, "val": va, "test": te,
             "bounds": realism_bounds(tr["x"], device, widen=3.0 if smoke else 0.25)}
 
@@ -627,9 +660,23 @@ def load_all(data_dir, exp, device, smoke=False):
 # (https://docs.github.com/en/rest/releases): get release by tag, upload/delete release asset.
 # ----------------------------------------------------------------------------------------------
 RESULT_FILES = ("metrics.json", "log.jsonl", "preds_test.npz", "pool_final.npy")
-STALE_MIN = {"B": 40, "C": 240}       # a claim older than this with no result is taken over
+STALE_MIN = {"B": 40, "C": 240, "B2": 40, "F": 40, "W": 180, "X": 30}   # claim age (min) before takeover
 
 
+def stale_min(exp):
+    return STALE_MIN.get(family(exp), 60)
+
+
+CODE_FILE = os.path.abspath(__file__)
+CODE_ROOT = os.path.dirname(os.path.dirname(CODE_FILE))        # the code clone made by the notebook
+
+
+def _file_hash(p=CODE_FILE):
+    return hashlib.sha256(open(p, "rb").read()).hexdigest()[:12]
+
+
+LOADED_HASH = _file_hash()                                     # the code this process is running
+_BAD_HASHES = set()
 _SECRETS = []
 
 
@@ -650,7 +697,8 @@ class Queue:
     def __init__(self, repo, token, clone_dir, worker, ns=""):
         self.repo, self.token, self.dir, self.worker, self.ns = repo, token, clone_dir, worker, ns
         _SECRETS.append(token)
-        url = f"https://x-access-token:{token}@github.com/{repo}.git"
+        local = os.path.isdir(repo)                    # local bare repo: used only by the local tests
+        url = repo if local else f"https://x-access-token:{token}@github.com/{repo}.git"
         if not os.path.exists(os.path.join(clone_dir, ".git")):
             _git(".", "clone", "--quiet", url, clone_dir)
         _git(self.dir, "config", "user.name", f"esm-{worker}")
@@ -662,13 +710,18 @@ class Queue:
 
     def state(self, plan):
         done = {r for r in plan if os.path.exists(os.path.join(self.dir, self.ns + "results", r, "metrics.json"))}
-        claims = {}
+        claims, errors = {}, {}
         for p in glob.glob(os.path.join(self.dir, self.ns + "claims", "*.json")):
             try:
                 c = json.load(open(p)); claims[c["run"]] = c
             except Exception:
                 pass
-        return done, claims
+        for p in glob.glob(os.path.join(self.dir, self.ns + "errors", "*.json")):
+            try:
+                e = json.load(open(p)); errors[e["run"]] = e.get("code")
+            except Exception:
+                pass
+        return done, claims, errors
 
     def _push(self, msg, paths, tries=8):
         _git(self.dir, "add", *paths)
@@ -687,10 +740,10 @@ class Queue:
     def claim(self, plan):
         for _ in range(10):
             self.sync()
-            done, claims = self.state(plan)
+            done, claims, errors = self.state(plan)
             now = time.time()
-            free = [r for r in plan if r not in done and
-                    (r not in claims or now - claims[r]["time"] > 60 * STALE_MIN[parse_run(r)[0]])]
+            free = [r for r in plan if r not in done and errors.get(r) != LOADED_HASH and   # failed on this code: skip
+                    (r not in claims or now - claims[r]["time"] > 60 * stale_min(parse_run(r)[0]))]
             if not free:
                 active = [r for r in plan if r not in done and r in claims]
                 return None, len(done), active
@@ -724,10 +777,31 @@ class Queue:
             return self.publish(run_id, out_root, depth + 1)
         return ok
 
+    def report_error(self, run_id, err):
+        """Record a failed run (with the code version) and release its claim, so that the queue moves on.
+        Runs that failed on the current code are skipped by every worker until the code changes."""
+        try:
+            self.sync()
+            d = os.path.join(self.dir, self.ns + "errors"); os.makedirs(d, exist_ok=True)
+            json.dump({"run": run_id, "worker": self.worker, "code": LOADED_HASH, "time": time.time(),
+                       "error": err[-4000:]}, open(os.path.join(d, f"{run_id}.json"), "w"), indent=1)
+            if os.path.exists(os.path.join(self.dir, self.ns + "claims", f"{run_id}.json")):
+                _git(self.dir, "rm", "--quiet", f"{self.ns}claims/{run_id}.json", check=False)
+            self._push(f"error {run_id} by {self.worker}", [f"{self.ns}errors/{run_id}.json"])
+        except Exception as e:
+            print(f"[{self.worker}] could not report the error: {_scrub(str(e))}", flush=True)
+
     def upload_weights(self, run_id, out_root, tag="weights"):
+        try:
+            return self._upload_weights(run_id, out_root, tag)
+        except Exception as e:
+            print(f"[{self.worker}] weights upload error: {_scrub(str(e))[:200]}", flush=True)
+            return False
+
+    def _upload_weights(self, run_id, out_root, tag):
         import requests
         path = os.path.join(out_root, run_id, "model_ema_fp16.pt")
-        if not os.path.exists(path):
+        if not os.path.exists(path) or os.path.isdir(self.repo):
             return False
         h = {"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json"}
         rel = requests.get(f"https://api.github.com/repos/{self.repo}/releases/tags/{tag}", headers=h, timeout=60).json()
@@ -749,32 +823,97 @@ class Queue:
         return False
 
 
+def maybe_update(worker):                                                                # GLUE
+    """Pull the code clone. If esm_core.py changed and the new file passes --selftest, restart this worker
+    on it (same PID on Linux via execv, so the notebook keeps waiting). A failing new version is skipped."""
+    if not os.path.isdir(os.path.join(CODE_ROOT, ".git")):
+        return
+    if _git(CODE_ROOT, "pull", "--quiet", "--ff-only", check=False).returncode != 0:
+        _git(CODE_ROOT, "fetch", "--quiet", "origin", check=False)
+        _git(CODE_ROOT, "reset", "--quiet", "--hard", "origin/main", check=False)
+    try:
+        new = _file_hash()
+    except OSError:
+        return
+    if new == LOADED_HASH or new in _BAD_HASHES:
+        return
+    try:
+        r = subprocess.run([sys.executable, CODE_FILE, "--selftest"], capture_output=True, text=True, timeout=900)
+        ok, msg = r.returncode == 0, r.stdout[-200:] + r.stderr[-400:]
+    except Exception as e:
+        ok, msg = False, str(e)
+    if not ok:
+        _BAD_HASHES.add(new)
+        print(f"[{worker}] new code {new} failed its self-test; staying on {LOADED_HASH}:\n{_scrub(msg)}", flush=True)
+        return
+    print(f"[{worker}] code {LOADED_HASH} -> {new}: restarting on the new code", flush=True)
+    args = [sys.executable, CODE_FILE] + sys.argv[1:]
+    if os.name == "nt":                       # local tests on Windows: run the new code as a child, pass on its exit code
+        sys.exit(subprocess.call(args))
+    os.execv(sys.executable, args)
+
+
 def queue_worker(a, device):
     token = os.environ.get("GH_TOKEN")
     assert token, "GH_TOKEN missing: add it in Kaggle Add-ons > Secrets (or Colab Secrets)"
-    exps = a.exps.split(",")
-    plan = [r for r in (RUNS_C + RUNS_B) if parse_run(r)[0] in exps]
-    if a.smoke:                                   # queue test on random data, separate namespace
+    t0 = float(os.environ.setdefault("ESM_T0", str(time.time())))    # kept across self-updates
+    lists, plan = run_lists(), []
+    for e in a.exps.split(","):                                      # priority = order of --exps
+        plan += [r for r in lists.get(e.strip(), []) if r not in plan]
+    if a.smoke and not os.path.isdir(a.repo):     # queue test on random data, separate namespace
         plan = plan[:3]
     q = Queue(a.repo, token, a.clone, a.worker, ns=a.ns)
-    data_cache, pending = {}, []
+    print(f"[{a.worker}] code {LOADED_HASH}; {len(plan)} runs in plan for {a.exps}", flush=True)
+    data_cache, pending, last_note = {}, [], 0.0
     while True:
+        maybe_update(a.worker)                                       # may restart this process
         r, n_done, active = q.claim(plan)
         if r is None:
-            print(f"[{a.worker}] queue empty: {n_done}/{len(plan)} done; still running elsewhere: {active}", flush=True)
-            break
+            if time.time() - t0 > a.linger * 3600:
+                print(f"[{a.worker}] stopping: {a.linger} h linger time is over", flush=True)
+                break
+            if time.time() - last_note > 1800:
+                print(f"[{a.worker}] queue empty: {n_done}/{len(plan)} done, {len(active)} running elsewhere; "
+                      f"waiting for new runs", flush=True)
+                last_note = time.time()
+            time.sleep(a.poll)
+            continue
         print(f"[{a.worker}] claimed {r} ({n_done}/{len(plan)} done)", flush=True)
-        exp = parse_run(r)[0]
-        if exp not in data_cache:
+        try:
+            exp = parse_run(r)[0]
+            if exp not in data_cache:
+                data_cache.clear()
+                data_cache[exp] = load_all(None if a.smoke else find_data_dir(a.data), exp, device, a.smoke)
+            run_one(r, data_cache[exp], a.out, device, smoke=a.smoke)
+        except Exception:
+            err = _scrub(traceback.format_exc())
+            print(f"[{a.worker}] ERROR in {r} (recorded in errors/, moving on):\n{err[-1500:]}", flush=True)
+            q.report_error(r, err)
             data_cache.clear()
-            data_cache[exp] = load_all(None if a.smoke else find_data_dir(a.data), exp, device, a.smoke)
-        run_one(r, data_cache[exp], a.out, device, smoke=a.smoke)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            continue
         if not q.publish(r, a.out):
             pending.append(r)
         if not q.upload_weights(r, a.out):
             print(f"[{a.worker}] weights upload failed for {r} (kept in local output)", flush=True)
     for r in pending:                                          # final safety: retry unpublished results
         print(f"[{a.worker}] retry publish {r}:", q.publish(r, a.out), flush=True)
+
+
+def selftest():
+    """Cheap check run before a worker switches to new code: every planned run must parse, map to a
+    config and build its arm."""
+    n = 0
+    for fam, runs in run_lists().items():
+        for r in runs:
+            exp, arm, s = parse_run(r)
+            assert family(exp) == fam, (r, fam)
+            assert "train_key" in CFG[cfg_key(exp)], r
+            if arm != "scan":
+                make_arm(arm, s, (np.zeros(4), np.ones(4)))
+            n += 1
+    print("SELFTEST OK", LOADED_HASH, n, "runs", flush=True)
 
 
 def main():
@@ -787,7 +926,12 @@ def main():
     ap.add_argument("--queue", action="store_true"); ap.add_argument("--repo", default="omarzyd/esm-runs")
     ap.add_argument("--exps", default="B"); ap.add_argument("--worker", default="w")
     ap.add_argument("--clone", default="esm-runs"); ap.add_argument("--ns", default="")
+    ap.add_argument("--linger", type=float, default=11.0, help="hours to keep waiting for new runs")
+    ap.add_argument("--poll", type=int, default=180, help="seconds between queue checks while waiting")
+    ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
+    if a.selftest:
+        selftest(); return
     if a.prepare:
         prepare(a.out, a.root, full=a.full); return
     device = torch.device(f"cuda:{a.gpu}" if torch.cuda.is_available() else "cpu")

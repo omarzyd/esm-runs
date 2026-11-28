@@ -47,11 +47,16 @@ SEEDS_F = [0, 1, 2]
 RUNS_F = ["X-scan-s0"] + [f"F{t}-{a}-s{s}" for s in SEEDS_F for t in FOLDS for a in ARMS_F]   # rotation folds
 ARMS_W = ["erm", "targeted", "random13", "cmamae"]
 RUNS_W = [f"W-{a}-s{s}" for s in range(5) for a in ARMS_W]              # official WILDS/Gao recipe
+# W2 (pre-registered in PREREG_W2.md, 28 Nov 2026): the same W training, read out three ways (val-selected raw
+# checkpoint; SWA = weights averaged over epochs 5-9; SWA + test-time augmentation with the arm's own augmentation).
+# New seeds 10-19 (independent of W). Seed-major order, so complete seed blocks finish first; ERM last (5 seeds).
+ARMS_W2 = ["cmamae", "targeted", "random13"]
+RUNS_W2 = [f"W2-{a}-s{s}" for s in range(10, 20) for a in ARMS_W2] + [f"W2-erm-s{s}" for s in range(10, 15)]
 
 
 def run_lists():
     """Run lists by family; a worker's plan is the concatenation in the order given by --exps."""
-    return {"B": RUNS_B, "C": RUNS_C, "B2": RUNS_B2, "F": RUNS_F, "W": RUNS_W}
+    return {"B": RUNS_B, "C": RUNS_C, "B2": RUNS_B2, "F": RUNS_F, "W": RUNS_W, "W2": RUNS_W2}
 
 
 def parse_run(run_id):
@@ -83,6 +88,10 @@ CFG = {
     # W = the published Camelyon17 recipe (WILDS config; Gao et al. fork: batch 128, lr 0.0039, 10 epochs, constant lr)
     "W": dict(arch="densenet121_scratch", epochs=10, batch=128, lr=0.0039, wd=1e-2, train_key="trainfull",
               nesterov=False, sched="const", ema_eval=False, views=1, geo=False, test_each_epoch=True),
+    # W2 = W training unchanged + extra readouts (SWA over epochs 5-9 with BN recomputed; SWA + own-augmentation TTA)
+    "W2": dict(arch="densenet121_scratch", epochs=10, batch=128, lr=0.0039, wd=1e-2, train_key="trainfull",
+               nesterov=False, sched="const", ema_eval=False, views=1, geo=False, test_each_epoch=False,
+               swa_start=5, swa_bn_batches=200, tta_views=8),
     "X": dict(arch="none", epochs=0, batch=0, lr=0, wd=0, train_key="none"),       # analysis-only run
     "views": 2,            # archive views per patch per step (augmenting arms)
     "clean_frac": 0.25,    # share of views left clean
@@ -715,6 +724,96 @@ def probe_batch(tr, n, rng, device):
     return x, torch.from_numpy(tr["y"][idx]).long().to(device)
 
 
+def make_views(xb, arm, ep, rng, device, V, use_geo):
+    """Training input for one batch under the arm's augmentation (moved here unchanged from run_one so the
+    SWA BatchNorm pass sees exactly the training input distribution)."""
+    if arm.kind == "none":
+        return [geo(xb) if use_geo else xb]
+    views = []
+    for _ in range(V):
+        v = geo(xb) if use_geo else xb
+        if arm.kind == "fn":
+            with torch.no_grad():
+                v = arm.apply(v)
+        elif arm.kind == "hed" or ep == 0 or len(arm.pool) == 0:
+            v = hed_jitter(v, 0.1 if arm.kind == "hed" else 0.05)
+        else:
+            with torch.no_grad():
+                g = arm.pool[rng.integers(0, len(arm.pool), len(v))]
+                aug = apply_genome(v, torch.from_numpy(g).to(device))
+                keep_clean = torch.rand(len(v), device=device) < CFG["clean_frac"]
+                v = torch.where(keep_clean[:, None, None, None], v, aug)
+        views.append(v)
+    return views
+
+
+@torch.no_grad()
+def recompute_bn(net, tr, arm, rng, device, cfg, n_batches):                                 # GLUE
+    """BatchNorm statistics for averaged weights, following torch.optim.swa_utils.update_bn (reset the running
+    stats, momentum=None = cumulative average, forward passes in train mode), fed with batches built exactly
+    like the training input (the arm's own augmentation, final-epoch state).
+    Source: https://pytorch.org/docs/stable/optim.html#weight-averaging-swa-and-ema"""
+    bns = [m for m in net.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    if not bns:
+        return
+    moms = [m.momentum for m in bns]
+    for m in bns:
+        m.reset_running_stats(); m.momentum = None
+    net.train()
+    idx = rng.permutation(len(tr["y"]))[:n_batches * cfg["batch"]]
+    V, use_geo = cfg.get("views", CFG["views"]), cfg.get("geo", True)
+    for i in range(0, len(idx), cfg["batch"]):
+        bi = np.sort(idx[i:i + cfg["batch"]])
+        xb = torch.from_numpy(np.ascontiguousarray(tr["x"][bi])).to(device).permute(0, 3, 1, 2).float() / 255
+        xin = torch.cat(make_views(xb, arm, cfg["epochs"] - 1, rng, device, V, use_geo))
+        with torch.autocast(device.type, enabled=device.type == "cuda"):
+            net(norm(xin).contiguous(memory_format=torch.channels_last))
+    for m, mo in zip(bns, moms):
+        m.momentum = mo
+    net.eval()
+
+
+def tta_view(x, arm, gen, device):                                                             # GLUE
+    """One test-time view from the arm's own training augmentation (identity for ERM)."""
+    if arm.kind == "fn":
+        return arm.fn(x)
+    if arm.kind == "pool" and len(arm.pool):
+        g = arm.pool[gen.integers(0, len(arm.pool), len(x))]
+        return apply_genome(x, torch.from_numpy(g).to(device))
+    return x
+
+
+@torch.no_grad()
+def predict_tta(model, X, device, arm, n_views, seed, bs=256):                                # GLUE
+    """Mean tumour probability over the clean patch and n_views - 1 views from the arm's own augmentation."""
+    model.eval(); out = []
+    gen = np.random.default_rng(seed + 777)
+    for i in range(0, len(X), bs):
+        xb = torch.from_numpy(np.ascontiguousarray(X[i:i + bs])).to(device).permute(0, 3, 1, 2).float() / 255
+        acc = torch.zeros(len(xb), device=device)
+        for v in range(n_views):
+            xv = xb if v == 0 else tta_view(xb, arm, gen, device)
+            with torch.autocast(device.type, enabled=device.type == "cuda"):
+                acc += torch.softmax(model(norm(xv)).float(), 1)[:, 1]
+        out.append((acc / n_views).cpu())
+    return torch.cat(out).numpy()
+
+
+def readout(tag, p, te):                                                                         # GLUE
+    """Test metrics for one set of tumour probabilities; tag '' = the standard (val-selected) readout."""
+    pred = (p > 0.5).astype(int)
+    slides = {int(s): float((pred[te["slide"] == s] == te["y"][te["slide"] == s]).mean()) for s in np.unique(te["slide"])}
+    try:
+        from sklearn.metrics import roc_auc_score
+        auc = float(roc_auc_score(te["y"], p))
+    except Exception:
+        auc = None
+    x = f"_{tag}" if tag else ""
+    return {f"test_acc{x}": float((pred == te["y"]).mean()), f"test_auc{x}": auc,
+            f"worst_slide_acc{x}": min(slides.values()), f"slide_acc{x}": slides,
+            f"pos_rate{x}": float(pred.mean())}
+
+
 def run_one(run_id, data, out_root, device, smoke=False):
     exp, arm_name, seed = parse_run(run_id)
     out = os.path.join(out_root, run_id)
@@ -723,11 +822,15 @@ def run_one(run_id, data, out_root, device, smoke=False):
     os.makedirs(out, exist_ok=True)
     cfg = dict(CFG[cfg_key(exp)]); set_seed(seed)
     tr, va, te = data["train"], data["val"], data["test"]
-    if smoke: cfg.update(epochs=2, batch=32)
+    if smoke:
+        cfg.update(epochs=2, batch=32)
+        if cfg.get("swa_start") is not None:
+            cfg.update(swa_start=1, swa_bn_batches=3)
     rng = np.random.default_rng(seed)
     bounds = data["bounds"]
     model = make_model(cfg["arch"], smoke).to(device).to(memory_format=torch.channels_last)
     ema = copy.deepcopy(model)
+    swa = torch.optim.swa_utils.AveragedModel(model) if cfg.get("swa_start") is not None else None   # W2 only
     opt = torch.optim.SGD(model.parameters(), lr=cfg["lr"], momentum=0.9, weight_decay=cfg["wd"],
                           nesterov=cfg.get("nesterov", True))
     n = len(tr["y"]); steps = cfg["epochs"] * math.ceil(n / cfg["batch"])
@@ -755,24 +858,7 @@ def run_one(run_id, data, out_root, device, smoke=False):
             xb = torch.from_numpy(np.ascontiguousarray(X_all[bi])).to(device, non_blocking=True)
             xb = xb.permute(0, 3, 1, 2).float() / 255
             yb = Y_all[bi].to(device)
-            views = []
-            if arm.kind == "none":
-                views = [geo(xb) if use_geo else xb]
-            else:
-                for _ in range(V):
-                    v = geo(xb) if use_geo else xb
-                    if arm.kind == "fn":
-                        with torch.no_grad():
-                            v = arm.apply(v)
-                    elif arm.kind == "hed" or ep == 0 or len(arm.pool) == 0:
-                        v = hed_jitter(v, 0.1 if arm.kind == "hed" else 0.05)
-                    else:
-                        with torch.no_grad():
-                            g = arm.pool[rng.integers(0, len(arm.pool), len(v))]
-                            aug = apply_genome(v, torch.from_numpy(g).to(device))
-                            keep_clean = torch.rand(len(v), device=device) < CFG["clean_frac"]
-                            v = torch.where(keep_clean[:, None, None, None], v, aug)
-                    views.append(v)
+            views = make_views(xb, arm, ep, rng, device, V, use_geo)
             xin = torch.cat(views); yin = yb.repeat(len(views))
             with torch.autocast(device.type, enabled=device.type == "cuda"):
                 loss = F.cross_entropy(model(norm(xin).contiguous(memory_format=torch.channels_last)), yin)
@@ -781,6 +867,8 @@ def run_one(run_id, data, out_root, device, smoke=False):
             if sched is not None:
                 sched.step()
             ema_update(ema, model, CFG["ema"])
+            if swa is not None and ep >= cfg["swa_start"]:
+                swa.update_parameters(model)                   # uniform average of every step's weights
             tot += loss.item(); nb += 1
         pv = predict(evm, va["x"], device)
         vacc = float(((pv > 0.5) == va["y"]).mean())
@@ -795,21 +883,30 @@ def run_one(run_id, data, out_root, device, smoke=False):
             best = (vacc, {k: v.detach().cpu().clone() for k, v in evm.state_dict().items()}, ep)
     evm.load_state_dict(best[1])
     pt = predict(evm, te["x"], device)
-    pred = (pt > 0.5).astype(int)
-    acc = float((pred == te["y"]).mean())
-    slides = {int(s): float((pred[te["slide"] == s] == te["y"][te["slide"] == s]).mean()) for s in np.unique(te["slide"])}
-    try:
-        from sklearn.metrics import roc_auc_score
-        auc = float(roc_auc_score(te["y"], pt))
-    except Exception:
-        auc = None
+    std = readout("", pt, te)
+    acc = std["test_acc"]
     try:
         cov = target_coverage(arm, data, device, seed=seed)
     except Exception as e:                                       # analysis extra: never fail a run for it
         cov = {"error": str(e)[:200]}
+    extra = {}
+    if swa is not None:                                          # W2: SWA readout, then SWA + own-augmentation TTA
+        t_swa = time.time()
+        net = swa.module
+        recompute_bn(net, tr, arm, rng, device, cfg, cfg["swa_bn_batches"])
+        ps = predict(net, te["x"], device)
+        pvs = predict(net, va["x"], device)
+        extra.update(readout("swa", ps, te))
+        extra.update(val_acc_swa=float(((pvs > 0.5) == va["y"]).mean()), swa_updates=int(swa.n_averaged.item()))
+        ptt = predict_tta(net, te["x"], device, arm, cfg["tta_views"], seed) if arm.kind != "none" else ps
+        extra.update(readout("swa_tta", ptt, te))
+        extra["swa_minutes"] = round((time.time() - t_swa) / 60, 2)
+        np.savez_compressed(os.path.join(out, "preds_test_swa.npz"), prob_swa=ps.astype(np.float16),
+                            prob_swa_tta=ptt.astype(np.float16))
+        torch.save({k: (v.half() if v.is_floating_point() else v) for k, v in net.state_dict().items()},
+                   os.path.join(out, "model_swa_fp16.pt"))
     metrics = {"run_id": run_id, "exp": exp, "arm": arm_name, "seed": seed, "arch": cfg["arch"],
-               "test_acc": acc, "val_acc": best[0], "best_epoch": best[2], "test_auc": auc,
-               "worst_slide_acc": min(slides.values()), "slide_acc": slides,
+               **std, "val_acc": best[0], "best_epoch": best[2], **extra,
                "minutes": round((time.time() - t_start) / 60, 2), "search_minutes": round(search_sec / 60, 2),
                "final_pool": int(len(arm.pool)), "arm_stats": arm.stats(), "target_coverage": cov, "cfg": cfg,
                "shared_cfg": {k: v for k, v in CFG.items() if not isinstance(v, dict)}, "code": LOADED_HASH}
@@ -819,7 +916,8 @@ def run_one(run_id, data, out_root, device, smoke=False):
     torch.save({k: (v.half() if v.is_floating_point() else v) for k, v in best[1].items()},
                os.path.join(out, "model_ema_fp16.pt"))      # weights: GitHub Release + local output, not git
     json.dump(metrics, open(os.path.join(out, "metrics.json"), "w"), indent=1)
-    print("DONE", run_id, "test_acc=%.4f val_acc=%.4f" % (acc, best[0]), flush=True)
+    print("DONE", run_id, "test_acc=%.4f val_acc=%.4f" % (acc, best[0]),
+          ("swa=%.4f swa_tta=%.4f" % (extra["test_acc_swa"], extra["test_acc_swa_tta"])) if extra else "", flush=True)
 
 
 def warm(x, step=1 << 28):                                                               # GLUE
@@ -985,8 +1083,8 @@ def load_all(data_dir, exp, device, smoke=False):
 # Sources: git CLI docs (clone/commit/push/pull --rebase); GitHub REST API "Releases"
 # (https://docs.github.com/en/rest/releases): get release by tag, upload/delete release asset.
 # ----------------------------------------------------------------------------------------------
-RESULT_FILES = ("metrics.json", "log.jsonl", "preds_test.npz", "pool_final.npy")
-STALE_MIN = {"B": 40, "C": 240, "B2": 40, "F": 40, "W": 180, "X": 30}   # claim age (min) before takeover
+RESULT_FILES = ("metrics.json", "log.jsonl", "preds_test.npz", "preds_test_swa.npz", "pool_final.npy")
+STALE_MIN = {"B": 40, "C": 240, "B2": 40, "F": 40, "W": 180, "W2": 120, "X": 30}   # claim age (min) before takeover
 
 
 def stale_min(exp):
@@ -1125,28 +1223,34 @@ class Queue:
             return False
 
     def _upload_weights(self, run_id, out_root, tag):
-        import requests
-        path = os.path.join(out_root, run_id, "model_ema_fp16.pt")
-        if not os.path.exists(path) or os.path.isdir(self.repo):
+        """Upload the val-selected checkpoint (<run>.pt) and, for W2, the SWA model (<run>-swa.pt)."""
+        files = [(f, s) for f, s in (("model_ema_fp16.pt", ""), ("model_swa_fp16.pt", "-swa"))
+                 if os.path.exists(os.path.join(out_root, run_id, f))]
+        if not files or os.path.isdir(self.repo):
             return False
+        import requests
         h = {"Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json"}
         rel = requests.get(f"https://api.github.com/repos/{self.repo}/releases/tags/{tag}", headers=h, timeout=60).json()
-        name = f"{self.ns.replace('/', '_')}{run_id}.pt"
-        for a in rel.get("assets", []):
-            if a["name"] == name:
-                requests.delete(a["url"], headers=h, timeout=60)
         up = rel["upload_url"].split("{")[0]
-        for i in range(4):
-            try:
-                with open(path, "rb") as fh:
-                    r = requests.post(f"{up}?name={name}", headers={**h, "Content-Type": "application/octet-stream"},
-                                      data=fh, timeout=600)
-                if r.status_code in (200, 201):
-                    return True
-            except Exception:
-                pass
-            time.sleep(10 * (i + 1))
-        return False
+        ok_all = True
+        for fname, suffix in files:
+            name = f"{self.ns.replace('/', '_')}{run_id}{suffix}.pt"
+            for a in rel.get("assets", []):
+                if a["name"] == name:
+                    requests.delete(a["url"], headers=h, timeout=60)
+            ok = False
+            for i in range(4):
+                try:
+                    with open(os.path.join(out_root, run_id, fname), "rb") as fh:
+                        r = requests.post(f"{up}?name={name}", headers={**h, "Content-Type": "application/octet-stream"},
+                                          data=fh, timeout=600)
+                    if r.status_code in (200, 201):
+                        ok = True; break
+                except Exception:
+                    pass
+                time.sleep(10 * (i + 1))
+            ok_all = ok_all and ok
+        return ok_all
 
 
 def maybe_update(worker):                                                                # GLUE

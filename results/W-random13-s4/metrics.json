@@ -1,0 +1,68 @@
+{
+ "run_id": "W-random13-s4",
+ "exp": "W",
+ "arm": "random13",
+ "seed": 4,
+ "arch": "densenet121_scratch",
+ "test_acc": 0.9292919792132057,
+ "val_acc": 0.9243,
+ "best_epoch": 3,
+ "test_auc": 0.9766139595909549,
+ "worst_slide_acc": 0.8925600376706954,
+ "slide_acc": {
+  "20": 0.9569553805774278,
+  "21": 0.9139144558743909,
+  "22": 0.8932038834951457,
+  "23": 0.9591527987897126,
+  "24": 0.9246796945774557,
+  "25": 0.9460083064143978,
+  "26": 0.9019659239842726,
+  "27": 0.9350307287093942,
+  "28": 0.9469540121714035,
+  "29": 0.8925600376706954
+ },
+ "minutes": 61.77,
+ "search_minutes": 3.83,
+ "final_pool": 536,
+ "arm_stats": {
+  "pool": 536
+ },
+ "target_coverage": {
+  "cov_aug": 0.239,
+  "cov_clean": 0.253,
+  "k": 5,
+  "n": 1000
+ },
+ "cfg": {
+  "arch": "densenet121_scratch",
+  "epochs": 10,
+  "batch": 128,
+  "lr": 0.0039,
+  "wd": 0.01,
+  "train_key": "trainfull",
+  "nesterov": false,
+  "sched": "const",
+  "ema_eval": false,
+  "views": 1,
+  "geo": false,
+  "test_each_epoch": true
+ },
+ "shared_cfg": {
+  "views": 2,
+  "clean_frac": 0.25,
+  "budget": 600,
+  "probe": 64,
+  "pool_k": 32,
+  "grid": [
+   16,
+   16
+  ],
+  "ema": 0.995,
+  "mc_teacher_acc": 0.6,
+  "tmin": -1.0,
+  "emitters": 5,
+  "emitter_batch": 20,
+  "pop": 20
+ },
+ "code": "fb3b75e3b1d1"
+}

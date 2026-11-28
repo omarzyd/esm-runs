@@ -34,7 +34,19 @@ RUNS_C = [f"C-{a}-s{s}" for s in SEEDS_C for a in ARMS_C]    # official-style tr
 RUNS_C += [f"C-{a}-s{s}" for s in (3, 4) for a in ("cmamae", "random13", "hedjitter")]   # added 28 Nov 2026: 2 more seeds for the 3 augmentation arms (ERM: 3 seeds, collapsed); all seeds reported
 
 
-RUNS_B2, RUNS_F, RUNS_W = [], [], []        # v3 tracks (REVIEW_AND_PLAN_V3.md), filled in stage 2
+# v3 tracks (paper/REVIEW_AND_PLAN_V3.md, 28 Nov 2026)
+ARMS_B2 = ["targeted", "hedlight", "hedstrong",                          # baselines ported from published code
+           "randk1", "randk4", "randk16", "randk64", "randk256",         # diversity dose (frozen pool of K genomes)
+           "hard64", "rand64", "easy64",                                 # hardness at fixed pool size
+           "r13_stain", "r13_nostain", "r13_notone", "r13_nooptics", "r13_noacq",   # which gene groups matter
+           "cmamae_x0", "qdcover"]                                       # QD fixed: random start / diversity-only
+RUNS_B2 = [f"B2-{a}-s{s}" for s in SEEDS_B for a in ARMS_B2]            # Track B recipe, official split
+FOLDS = {0: (1, (2, 3, 4)), 1: (2, (0, 3, 4)), 2: (1, (0, 3, 4)), 3: (4, (0, 1, 2)), 4: (3, (0, 1, 2))}  # test: (val, train)
+ARMS_F = ["erm", "targeted", "random13", "cmamae", "mapelites", "pso", "r13_stain", "r13_nostain"]
+SEEDS_F = [0, 1, 2]
+RUNS_F = ["X-scan-s0"] + [f"F{t}-{a}-s{s}" for s in SEEDS_F for t in FOLDS for a in ARMS_F]   # rotation folds
+ARMS_W = ["erm", "targeted", "random13", "cmamae"]
+RUNS_W = [f"W-{a}-s{s}" for s in range(5) for a in ARMS_W]              # official WILDS/Gao recipe
 
 
 def run_lists():
@@ -67,6 +79,11 @@ def worker_share(runs, worker_id, n_workers):
 CFG = {
     "B": dict(arch="resnet18_imagenet", epochs=5, batch=128, lr=0.01, wd=1e-4, train_key="train"),
     "C": dict(arch="densenet121_scratch", epochs=5, batch=128, lr=0.004, wd=1e-2, train_key="trainfull"),
+    "F": dict(arch="resnet18_imagenet", epochs=5, batch=128, lr=0.01, wd=1e-4, train_key="fold"),
+    # W = the published Camelyon17 recipe (WILDS config; Gao et al. fork: batch 128, lr 0.0039, 10 epochs, constant lr)
+    "W": dict(arch="densenet121_scratch", epochs=10, batch=128, lr=0.0039, wd=1e-2, train_key="trainfull",
+              nesterov=False, sched="const", ema_eval=False, views=1, geo=False, test_each_epoch=True),
+    "X": dict(arch="none", epochs=0, batch=0, lr=0, wd=0, train_key="none"),       # analysis-only run
     "views": 2,            # archive views per patch per step (augmenting arms)
     "clean_frac": 0.25,    # share of views left clean
     "budget": 600,         # new candidate evaluations per archive update (every arm; raised from 200 after the first real runs: map coverage 9%)
@@ -234,9 +251,71 @@ def apply_genome(x, g):
 
 
 def hed_jitter(x, sigma=0.1):
-    """Hand-made H&E jitter baseline (Tellez 2019 / Gao 2023 style): scale ~U(1±s), shift ~U(±s)."""
+    """OLD sprint baseline, kept only for the epoch-0 warm-up of pool arms and for reproducing the sprint runs.
+    It is NOT the published H&E jitter: OD = -ln(P) (no 255 / ln(1e6) scaling), so it is far weaker
+    (REVIEW_AND_PLAN_V3.md §3.1). Use stain_jitter_gao / hed_tellez for baselines."""
     B = x.shape[0]; u = lambda: (torch.rand(B, device=x.device) * 2 - 1) * sigma
     return apply_stain(x, 1 + u(), 1 + u(), u(), u(), torch.zeros(B, device=x.device))
+
+
+# Published stain-jitter baselines, ported from their reference code.
+# Ruifrok & Johnston matrix as used by both references (3rd row as published, no cross product).
+_M_RJ = torch.tensor([[0.65, 0.70, 0.29], [0.07, 0.99, 0.11], [0.27, 0.57, 0.78]])
+_M_RJ_INV = torch.linalg.inv(_M_RJ)
+_SK_LOG = math.log(1e-6)                     # skimage separate_stains/combine_stains log_adjust
+
+
+def stain_jitter_gao(x, sigma=0.1):
+    """Batched port of StainColorJitter (Gao et al. 2023; i-gao/targeted-augs,
+    examples/data_augmentation/stain_color_jitter.py): S = -log(255 P + eps) M^-1, S' = alpha S + beta with
+    alpha ~ U(1-s, 1+s), beta ~ U(-s, s) for each of the 3 stain channels, P' = (exp(-S' M) - eps) / 255, clipped.
+    x: (B,3,H,W) in [0,1]; one (alpha, beta) per image, as in the per-image reference."""
+    eps, B = 1e-6, x.shape[0]
+    M, Minv = _M_RJ.to(x), _M_RJ_INV.to(x)
+    S = torch.einsum("bchw,cs->bshw", -torch.log(255 * x + eps), Minv)
+    alpha = 1 + (torch.rand(B, 3, device=x.device) - 0.5) * 2 * sigma
+    beta = (torch.rand(B, 3, device=x.device) - 0.5) * 2 * sigma
+    Sp = S * alpha[:, :, None, None] + beta[:, :, None, None]
+    return ((torch.exp(-torch.einsum("bshw,sc->bchw", Sp, M)) - eps) / 255).clamp(0, 1)
+
+
+def hed_tellez(x, sigma):
+    """HED colour augmentation of Tellez et al. (2018, 2019): skimage rgb2hed (OD / ln(1e6), negatives clipped),
+    per-channel alpha*s + beta with alpha ~ U(1-s, 1+s), beta ~ U(-s, s), then skimage hed2rgb.
+    HED-light: sigma 0.05; HED-strong: sigma 0.2 (as in CASA's baselines)."""
+    B = x.shape[0]
+    M, Minv = _M_RJ.to(x), _M_RJ_INV.to(x)
+    st = torch.einsum("bchw,cs->bshw", torch.log(x.clamp(min=1e-6)) / _SK_LOG, Minv).clamp(min=0)
+    a = 1 + (torch.rand(B, 3, device=x.device) * 2 - 1) * sigma
+    b = (torch.rand(B, 3, device=x.device) * 2 - 1) * sigma
+    st = st * a[:, :, None, None] + b[:, :, None, None]
+    return torch.exp(-torch.einsum("bshw,sc->bchw", st * (-_SK_LOG), M)).clamp(0, 1)
+
+
+def test_baselines():
+    """Checks the ports against NumPy transcriptions of the reference code (run by --smoke)."""
+    rng = np.random.default_rng(0)
+    img = rng.uniform(0.05, 1.0, (3, 96, 96)).astype(np.float32)
+    x = torch.from_numpy(img)[None]
+    # 1) sigma = 0 is the identity for Gao's formula (no clipping inside)
+    assert (stain_jitter_gao(x, 0.0) - x).abs().max() < 1e-3
+    # 2) fixed alpha/beta: compare with Gao's per-image code (P.T @ Minv, Sp @ M, .T back)
+    torch.manual_seed(1); out = stain_jitter_gao(x, 0.1)[0].numpy()
+    torch.manual_seed(1); alpha = 1 + (torch.rand(1, 3) - 0.5) * 0.2; beta = (torch.rand(1, 3) - 0.5) * 0.2
+    M = _M_RJ.numpy(); Minv = np.linalg.inv(M)
+    S = -(np.log(255 * img.T + 1e-6)) @ Minv
+    ref = np.clip(((np.exp(-(S * alpha.numpy()[0] + beta.numpy()[0]) @ M) - 1e-6).T / 255), 0, 1)
+    assert np.abs(out - ref).max() < 1e-3, np.abs(out - ref).max()
+    # 3) skimage round trip (sigma = 0) is close to the identity on tissue-like colours
+    t = torch.tensor([0.80, 0.55, 0.75]).view(1, 3, 1, 1).repeat(1, 1, 8, 8)
+    assert (hed_tellez(t, 0.0) - t).abs().max() < 0.05
+    # 4) strength order: our old jitter << Gao's on a mid-grey image
+    g = torch.full((64, 3, 16, 16), 0.5)
+    d_old = (hed_jitter(g, 0.1) - g).abs().mean().item(); d_gao = (stain_jitter_gao(g, 0.1) - g).abs().mean().item()
+    assert d_gao > 3 * d_old, (d_old, d_gao)
+    print(f"baseline ports OK (mean |change| on grey: old {d_old:.3f}, Gao {d_gao:.3f}, "
+          f"HED-light {(hed_tellez(g, 0.05) - g).abs().mean().item():.3f}, "
+          f"HED-strong {(hed_tellez(g, 0.2) - g).abs().mean().item():.3f})", flush=True)
 
 
 def geo(x):
@@ -322,6 +401,7 @@ class Evaluator:
         G = np.atleast_2d(np.asarray(G, dtype=np.float32))
         if count: self.n_new += len(G)
         obj, meas, ok = np.zeros(len(G)), np.zeros((len(G), 2)), np.zeros(len(G), bool)
+        self.last_meas4 = np.zeros((len(G), 4))                  # all 4 appearance statistics (qdcover)
         P = len(self.px)
         self.s.eval(); self.t.eval()
         per = max(1, 2048 // P)
@@ -343,6 +423,7 @@ class Evaluator:
             good = plaus & (acc_t.cpu().numpy() >= CFG["mc_teacher_acc"])
             obj[i:i + n] = np.where(good, reg, -10.0)
             meas[i:i + n] = st[:, :2]
+            self.last_meas4[i:i + n] = st
             ok[i:i + n] = good
         return obj, meas, ok
 
@@ -377,13 +458,82 @@ class ArmHED(Arm):
     kind = "hed"
 
 
+class ArmFn(Arm):
+    """Published per-image augmentation (targeted stain jitter, HED-light/strong), applied with probability p."""
+    kind = "fn"
+
+    def __init__(self, name, seed, bounds, fn, p):
+        super().__init__(name, seed, bounds)
+        self.fn, self.p = fn, p
+
+    def apply(self, v):
+        keep = torch.rand(len(v), device=v.device) < self.p
+        return torch.where(keep[:, None, None, None], self.fn(v), v)
+
+
+GENE_GROUPS = {"stain": [0, 1, 2, 3, 4], "tone": [5, 6, 7], "optics": [8, 9, 12], "acq": [10, 11]}
+R13_GROUPS = {"r13_stain": ("stain",), "r13_nostain": ("tone", "optics", "acq"),
+              "r13_notone": ("stain", "optics", "acq"), "r13_nooptics": ("stain", "tone", "acq"),
+              "r13_noacq": ("stain", "tone", "optics")}
+
+
 class ArmRandom(Arm):
+    """Uniform sampling of the realism-bounded genome (optionally only some gene groups; the rest at identity)."""
     kind = "pool"
 
+    def __init__(self, name, seed, bounds, active=None):
+        super().__init__(name, seed, bounds)
+        self.active = np.ones(13, bool) if active is None else np.asarray(active, bool)
+
+    def sample(self, n):
+        G = self.rng.random((n, 13)).astype(np.float32)
+        G[:, ~self.active] = IDENTITY[~self.active]
+        return G
+
     def update(self, ev):
-        G = self.rng.random((CFG["budget"], 13)).astype(np.float32)
+        G = self.sample(CFG["budget"])
         _, _, ok = ev(G)
         self.pool = G[ok] if ok.any() else self.pool
+
+
+class ArmRandK(ArmRandom):
+    """Diversity dose: K random accepted genomes drawn at the first update, then frozen for the rest of training."""
+
+    def __init__(self, name, seed, bounds, k):
+        super().__init__(name, seed, bounds)
+        self.k = k
+
+    def update(self, ev):
+        if len(self.pool):
+            return
+        G = self.sample(CFG["budget"])
+        _, _, ok = ev(G)
+        acc = G[ok]
+        if len(acc):
+            self.pool = acc[self.rng.permutation(len(acc))[:self.k]]
+
+
+class ArmSelect(ArmRandom):
+    """Hardness at a fixed pool size: every update scores CFG['budget'] random genomes and keeps K accepted ones:
+    the K hardest (highest teacher regret), K at random, or the K easiest."""
+
+    def __init__(self, name, seed, bounds, mode, k=64):
+        super().__init__(name, seed, bounds)
+        self.mode, self.k = mode, k
+
+    def update(self, ev):
+        G = self.sample(CFG["budget"])
+        obj, _, ok = ev(G)
+        idx = np.where(ok)[0]
+        if not len(idx):
+            return
+        if self.mode == "hard":
+            idx = idx[np.argsort(-obj[idx])][:self.k]
+        elif self.mode == "easy":
+            idx = idx[np.argsort(obj[idx])][:self.k]
+        else:
+            idx = self.rng.permutation(idx)[:self.k]
+        self.pool = G[idx]
 
 
 class ArmTopK(Arm):
@@ -444,13 +594,17 @@ class ArmRibs(Arm):
         from ribs.emitters import EvolutionStrategyEmitter, GaussianEmitter
         from ribs.schedulers import Scheduler
         lo, hi = bounds
-        ranges = [(float(lo[0]), float(hi[0])), (float(lo[1]), float(hi[1]))]
-        kw = dict(solution_dim=13, dims=CFG["grid"], ranges=ranges, seed=seed)
-        if name == "mapelites":
+        # qdcover: diversity-only QD over all 4 appearance statistics (constant quality = accepted)
+        self.ndesc = 4 if name == "qdcover" else 2
+        ranges = [(float(lo[i]), float(hi[i])) for i in range(self.ndesc)]
+        dims = (6, 6, 6, 6) if name == "qdcover" else CFG["grid"]
+        self.n_cells = int(np.prod(dims))
+        kw = dict(solution_dim=13, dims=dims, ranges=ranges, seed=seed)
+        if name in ("mapelites", "qdcover"):
             self.archive = GridArchive(**kw, learning_rate=1.0, threshold_min=CFG["tmin"])
             self.result = None
         else:
-            alpha = 0.01 if name == "cmamae" else 0.0
+            alpha = 0.01 if name in ("cmamae", "cmamae_x0") else 0.0
             self.archive = GridArchive(**kw, learning_rate=alpha, threshold_min=CFG["tmin"])
             self.result = GridArchive(**kw)
         self._Sched, self._ES, self._GE = Scheduler, EvolutionStrategyEmitter, GaussianEmitter
@@ -463,11 +617,23 @@ class ArmRibs(Arm):
         if self.name == "mapelites":
             em = [self._GE(self.archive, sigma=0.1, x0=IDENTITY, bounds=b, batch_size=CFG["emitter_batch"],
                            seed=s + i) for i in range(CFG["emitters"])]
-        else:
-            em = [self._ES(self.archive, x0=IDENTITY, sigma0=0.15, ranker="imp", selection_rule="mu",
+        elif self.name == "qdcover":                  # CMA-ME (two-stage improvement ranking) from random starts
+            em = [self._ES(self.archive, x0=self.rng.random(13), sigma0=0.3, ranker="2imp", selection_rule="filter",
+                           restart_rule="no_improvement", bounds=b, batch_size=CFG["emitter_batch"], seed=s + i)
+                  for i in range(CFG["emitters"])]
+        else:                                         # cmamae / cmaes_hard (identity start) or cmamae_x0 (random start)
+            x0 = (lambda: self.rng.random(13)) if self.name.endswith("_x0") else (lambda: IDENTITY)
+            s0 = 0.3 if self.name.endswith("_x0") else 0.15
+            em = [self._ES(self.archive, x0=x0(), sigma0=s0, ranker="imp", selection_rule="mu",
                            restart_rule="basic", bounds=b, batch_size=CFG["emitter_batch"], seed=s + i)
                   for i in range(CFG["emitters"])]
         self.sched = self._Sched(self.archive, em, result_archive=self.result)
+
+    def _score(self, ev, sol, count=True):
+        o, m, k = ev(sol, count=count)
+        if self.name == "qdcover":
+            return np.where(k, 1.0, -10.0), ev.last_meas4.copy(), k
+        return o, m, k
 
     def _store(self):
         return self.result if self.result is not None else self.archive
@@ -479,7 +645,7 @@ class ArmRibs(Arm):
         st = self._store()
         if len(st) > 0:                                   # re-score stored elites under the current model
             sol = st.data("solution")
-            o, m, k = ev(sol, count=False)
+            o, m, k = self._score(ev, sol, count=False)
             self.archive.clear()
             if self.result is not None: self.result.clear()
             if k.any():
@@ -488,7 +654,7 @@ class ArmRibs(Arm):
         n_iter = max(1, CFG["budget"] // (CFG["emitters"] * CFG["emitter_batch"]))
         for _ in range(n_iter):
             sol = self.sched.ask()
-            o, m, k = ev(sol)
+            o, m, k = self._score(ev, sol)
             try:
                 self.sched.tell(o, m)
             except IndexError:            # every candidate rejected and the archive is empty: restart emitters
@@ -515,15 +681,26 @@ class ArmRibs(Arm):
     def stats(self):
         st = self._store()
         return {"pool": int(len(self.pool)), "cells": int(len(st)),
-                "coverage": round(len(st) / (CFG["grid"][0] * CFG["grid"][1]), 3)}
+                "coverage": round(len(st) / self.n_cells, 3)}
 
 
 def make_arm(name, seed, bounds):
     if name == "erm": return ArmNone(name, seed, bounds)
     if name == "hedjitter": return ArmHED(name, seed, bounds)
+    if name == "targeted": return ArmFn(name, seed, bounds, lambda v: stain_jitter_gao(v, 0.1), p=0.568)
+    if name == "hedlight": return ArmFn(name, seed, bounds, lambda v: hed_tellez(v, 0.05), p=1.0)
+    if name == "hedstrong": return ArmFn(name, seed, bounds, lambda v: hed_tellez(v, 0.2), p=1.0)
     if name == "random13": return ArmRandom(name, seed, bounds)
-    if name in ("cmamae", "cmaes_hard", "mapelites"): return ArmRibs(name, seed, bounds)
-    return ArmMealpy(name, seed, bounds)
+    if name in R13_GROUPS:
+        act = np.zeros(13, bool)
+        for g in R13_GROUPS[name]:
+            act[GENE_GROUPS[g]] = True
+        return ArmRandom(name, seed, bounds, active=act)
+    if name.startswith("randk"): return ArmRandK(name, seed, bounds, k=int(name[5:]))
+    if name in ("hard64", "rand64", "easy64"): return ArmSelect(name, seed, bounds, mode=name[:4], k=64)
+    if name in ("cmamae", "cmaes_hard", "mapelites", "cmamae_x0", "qdcover"): return ArmRibs(name, seed, bounds)
+    if name in ("ga", "de", "pso", "abc", "acor", "gwo"): return ArmMealpy(name, seed, bounds)
+    raise ValueError(f"unknown arm {name}")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -551,11 +728,15 @@ def run_one(run_id, data, out_root, device, smoke=False):
     bounds = data["bounds"]
     model = make_model(cfg["arch"], smoke).to(device).to(memory_format=torch.channels_last)
     ema = copy.deepcopy(model)
-    opt = torch.optim.SGD(model.parameters(), lr=cfg["lr"], momentum=0.9, weight_decay=cfg["wd"], nesterov=True)
+    opt = torch.optim.SGD(model.parameters(), lr=cfg["lr"], momentum=0.9, weight_decay=cfg["wd"],
+                          nesterov=cfg.get("nesterov", True))
     n = len(tr["y"]); steps = cfg["epochs"] * math.ceil(n / cfg["batch"])
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg["lr"], total_steps=steps, pct_start=0.15)
+    sched = (torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg["lr"], total_steps=steps, pct_start=0.15)
+             if cfg.get("sched", "onecycle") == "onecycle" else None)          # W: constant lr (published recipe)
     scaler = torch.amp.GradScaler(enabled=device.type == "cuda")
     arm = make_arm(arm_name, seed, bounds)
+    V, use_geo = cfg.get("views", CFG["views"]), cfg.get("geo", True)
+    evm = ema if cfg.get("ema_eval", True) else model          # W: evaluate the raw model (published recipe)
     X_all = tr["x"]; Y_all = torch.from_numpy(tr["y"]).long()
     log = open(os.path.join(out, "log.jsonl"), "w")
     best = (-1, None, -1)
@@ -576,11 +757,14 @@ def run_one(run_id, data, out_root, device, smoke=False):
             yb = Y_all[bi].to(device)
             views = []
             if arm.kind == "none":
-                views = [geo(xb)]
+                views = [geo(xb) if use_geo else xb]
             else:
-                for _ in range(CFG["views"]):
-                    v = geo(xb)
-                    if arm.kind == "hed" or ep == 0 or len(arm.pool) == 0:
+                for _ in range(V):
+                    v = geo(xb) if use_geo else xb
+                    if arm.kind == "fn":
+                        with torch.no_grad():
+                            v = arm.apply(v)
+                    elif arm.kind == "hed" or ep == 0 or len(arm.pool) == 0:
                         v = hed_jitter(v, 0.1 if arm.kind == "hed" else 0.05)
                     else:
                         with torch.no_grad():
@@ -593,18 +777,24 @@ def run_one(run_id, data, out_root, device, smoke=False):
             with torch.autocast(device.type, enabled=device.type == "cuda"):
                 loss = F.cross_entropy(model(norm(xin).contiguous(memory_format=torch.channels_last)), yin)
             opt.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward(); scaler.step(opt); scaler.update(); sched.step()
+            scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
+            if sched is not None:
+                sched.step()
             ema_update(ema, model, CFG["ema"])
             tot += loss.item(); nb += 1
-        pv = predict(ema, va["x"], device)
+        pv = predict(evm, va["x"], device)
         vacc = float(((pv > 0.5) == va["y"]).mean())
         rec = {"epoch": ep, "train_loss": tot / max(nb, 1), "val_acc_ema": vacc, "sec": round(time.time() - t_start),
                "search_sec": round(search_sec), **arm.stats()}
+        if cfg.get("test_each_epoch"):                          # logged for analysis only; selection uses val
+            pe = (predict(evm, te["x"], device) > 0.5) == te["y"]
+            rec["test_acc_epoch"] = float(pe.mean())
+            rec["worst_slide_epoch"] = float(min(pe[te["slide"] == s].mean() for s in np.unique(te["slide"])))
         log.write(json.dumps(rec) + "\n"); log.flush(); print(run_id, rec, flush=True)
         if vacc > best[0]:
-            best = (vacc, {k: v.detach().cpu().clone() for k, v in ema.state_dict().items()}, ep)
-    ema.load_state_dict(best[1])
-    pt = predict(ema, te["x"], device)
+            best = (vacc, {k: v.detach().cpu().clone() for k, v in evm.state_dict().items()}, ep)
+    evm.load_state_dict(best[1])
+    pt = predict(evm, te["x"], device)
     pred = (pt > 0.5).astype(int)
     acc = float((pred == te["y"]).mean())
     slides = {int(s): float((pred[te["slide"] == s] == te["y"][te["slide"] == s]).mean()) for s in np.unique(te["slide"])}
@@ -613,12 +803,16 @@ def run_one(run_id, data, out_root, device, smoke=False):
         auc = float(roc_auc_score(te["y"], pt))
     except Exception:
         auc = None
+    try:
+        cov = target_coverage(arm, data, device, seed=seed)
+    except Exception as e:                                       # analysis extra: never fail a run for it
+        cov = {"error": str(e)[:200]}
     metrics = {"run_id": run_id, "exp": exp, "arm": arm_name, "seed": seed, "arch": cfg["arch"],
                "test_acc": acc, "val_acc": best[0], "best_epoch": best[2], "test_auc": auc,
                "worst_slide_acc": min(slides.values()), "slide_acc": slides,
                "minutes": round((time.time() - t_start) / 60, 2), "search_minutes": round(search_sec / 60, 2),
-               "final_pool": int(len(arm.pool)), "arm_stats": arm.stats(), "cfg": cfg, "shared_cfg":
-               {k: v for k, v in CFG.items() if not isinstance(v, dict)}, "code": LOADED_HASH}
+               "final_pool": int(len(arm.pool)), "arm_stats": arm.stats(), "target_coverage": cov, "cfg": cfg,
+               "shared_cfg": {k: v for k, v in CFG.items() if not isinstance(v, dict)}, "code": LOADED_HASH}
     np.savez_compressed(os.path.join(out, "preds_test.npz"), prob=pt.astype(np.float16),
                         y=te["y"].astype(np.int8), slide=te["slide"].astype(np.int16))
     np.save(os.path.join(out, "pool_final.npy"), arm.pool)
@@ -640,9 +834,141 @@ def warm(x, step=1 << 28):                                                      
     print(f"warmed {x.nbytes / 1e9:.1f} GB in {time.time() - t0:.0f} s", flush=True)
 
 
+@torch.no_grad()
+def target_coverage(arm, data, device, n=1000, k=5, seed=0):                                # GLUE
+    """k-NN coverage (Naeem et al. 2020) of the unseen hospital's appearance statistics by the training patches
+    as this arm augments them (its final pool / function), against the same patches un-augmented.
+    Analysis only: test images are never used for training, search or model selection."""
+    rng = np.random.default_rng(seed)
+    tr, te = data["train"], data["test"]
+    a_idx = np.sort(rng.choice(len(tr["y"]), min(n, len(tr["y"])), replace=False))
+    t_idx = np.sort(rng.choice(len(te["y"]), min(n, len(te["y"])), replace=False))
+
+    def aug(z):
+        if arm.kind == "fn":
+            return arm.apply(z)
+        if arm.kind == "hed":
+            return hed_jitter(z, 0.1)
+        if arm.kind == "pool" and len(arm.pool):
+            g = torch.from_numpy(arm.pool[rng.integers(0, len(arm.pool), len(z))]).to(device)
+            keep = torch.rand(len(z), device=device) < CFG["clean_frac"]
+            return torch.where(keep[:, None, None, None], z, apply_genome(z, g))
+        return z
+
+    def stats_of(X, idx, f):
+        out = []
+        for i in range(0, len(idx), 250):
+            xb = torch.from_numpy(np.ascontiguousarray(X[idx[i:i + 250]])).to(device).permute(0, 3, 1, 2).float() / 255
+            out.append(image_stats(f(xb)).cpu())
+        return torch.cat(out).numpy()
+
+    C = stats_of(tr["x"], a_idx, lambda z: z); A = stats_of(tr["x"], a_idx, aug); T = stats_of(te["x"], t_idx, lambda z: z)
+    mu, sd = C.mean(0), C.std(0) + 1e-8
+    C, A, T = (C - mu) / sd, (A - mu) / sd, (T - mu) / sd
+    d = lambda P, Q: np.sqrt(((P[:, None, :] - Q[None, :, :]) ** 2).sum(-1))
+    r = np.sort(d(T, T), 1)[:, k]                                # k-th neighbour radius (column 0 is the point itself)
+    return {"cov_aug": float((d(T, A).min(1) <= r).mean()), "cov_clean": float((d(T, C).min(1) <= r).mean()),
+            "k": k, "n": int(len(t_idx))}
+
+
+class Rows:                                                                                      # GLUE
+    """Lazy row view of a memory-mapped array: rows are gathered only when sliced (keeps big test sets on disk)."""
+
+    def __init__(self, base, idx):
+        self.base, self.idx = base, np.asarray(idx)
+        self.shape = (len(self.idx),) + tuple(base.shape[1:])
+        self.nbytes = int(np.prod(self.shape))
+
+    def __len__(self):
+        return len(self.idx)
+
+    def __getitem__(self, s):
+        return self.base[self.idx[s]]
+
+
+HOME = {0: "trainfull", 3: "trainfull", 4: "trainfull", 1: "valfull", 2: "test"}   # prepared file holding each hospital
+
+
+def load_fold(data_dir, t, n_per_hosp=10000, n_val=10000):                                   # GLUE
+    """Rotation fold t: test = every patch of hospital t; validation = 10k patches of FOLDS[t][0]; training = 10k
+    class-balanced patches from each of the other 3 hospitals (same sizes as Track B). Built from the prepared
+    trainfull (hospitals 0, 3, 4), valfull (1) and test (2) files."""
+    src = {k: load_split(data_dir, k) for k in ("trainfull", "valfull", "test")}
+    for s in src.values():
+        warm(s["x"])
+    rng = np.random.default_rng(1000 + t)
+    v, trs = FOLDS[t]
+
+    def rows(h):
+        s = src[HOME[h]]
+        return s, np.where(s["hosp"] == h)[0]
+
+    def take(s, idx):
+        idx = np.sort(idx)
+        return dict(x=np.asarray(s["x"][idx]), y=s["y"][idx], hosp=s["hosp"][idx], slide=s["slide"][idx])
+
+    parts = []
+    for h in trs:
+        s, idx = rows(h)
+        for c in (0, 1):
+            ic = idx[s["y"][idx] == c]
+            parts.append(take(s, rng.choice(ic, min(n_per_hosp // 2, len(ic)), replace=False)))
+    tr = {k: np.concatenate([p[k] for p in parts]) for k in ("x", "y", "hosp", "slide")}
+    s, idx = rows(v)
+    va = take(s, rng.choice(idx, min(n_val, len(idx)), replace=False))
+    s, idx = rows(t)
+    te = dict(x=Rows(s["x"], idx), y=s["y"][idx], hosp=s["hosp"][idx], slide=s["slide"][idx])
+    print(f"fold {t}: train {len(tr['y'])} from {trs}, val {len(va['y'])} from {v}, test {len(te['y'])} from {t}",
+          flush=True)
+    return tr, va, te
+
+
+@torch.no_grad()
+def run_scan(run_id, data_dir, out_root, device, n=2000):                                    # GLUE
+    """X-scan: per-hospital acquisition fingerprints from n random patches each, then hospital clustering.
+    Settles which hospitals share a scanner (sources disagree: evidence register R16 vs R40)."""
+    import kornia
+    from scipy.cluster.hierarchy import fcluster, linkage
+    out = os.path.join(out_root, run_id); os.makedirs(out, exist_ok=True)
+    src = {k: load_split(data_dir, k) for k in ("trainfull", "valfull", "test")}
+    rng = np.random.default_rng(0)
+    names = ["p95_H", "log_lap_var", "mean_E", "R_minus_B", "mean_R", "mean_G", "mean_B", "gray_std",
+             "noise_mad", "blockiness"]
+    feats = {}
+    for h in range(5):
+        s = src[HOME[h]]
+        pool_h = np.where(s["hosp"] == h)[0]
+        idx = np.sort(rng.choice(pool_h, min(n, len(pool_h)), replace=False))
+        rows = []
+        for i in range(0, len(idx), 250):
+            x = torch.from_numpy(np.ascontiguousarray(s["x"][idx[i:i + 250]])).to(device).permute(0, 3, 1, 2).float() / 255
+            g = x.mean(1, keepdim=True)
+            res = (g - kornia.filters.gaussian_blur2d(g, (5, 5), (1.0, 1.0))).flatten(1)
+            noise = (res - res.median(1, keepdim=True).values).abs().median(1).values
+            dc = (g[..., :, 1:] - g[..., :, :-1]).abs()[..., 0, :, :]          # column differences (B, H, W-1)
+            on = dc[..., 7::8].mean((1, 2)); off = dc.mean((1, 2))
+            rows.append(torch.cat([image_stats(x), x.mean((2, 3)), g.flatten(1).std(1, keepdim=True),
+                                   noise[:, None], (on / (off + 1e-8))[:, None]], 1).cpu())
+        feats[h] = torch.cat(rows).numpy()
+    med = np.stack([np.median(feats[h], 0) for h in range(5)])
+    z = (med - med.mean(0)) / (med.std(0) + 1e-8)
+    res = {"features": names, "median": {h: med[h].tolist() for h in range(5)},
+           "iqr": {h: (np.percentile(feats[h], 75, 0) - np.percentile(feats[h], 25, 0)).tolist() for h in range(5)}}
+    for tag, cols in (("all", list(range(len(names)))), ("optics", [1, 7, 8, 9]), ("colour", [0, 2, 3, 4, 5, 6])):
+        D = np.sqrt(((z[:, None, cols] - z[None, :, cols]) ** 2).sum(-1))
+        L = linkage(z[:, cols], "average")
+        res[f"dist_{tag}"] = D.round(3).tolist()
+        res[f"clusters3_{tag}"] = fcluster(L, 3, "maxclust").tolist()
+    json.dump({"run_id": run_id, "exp": "X", "arm": "scan", "seed": 0, "scan": res, "code": LOADED_HASH},
+              open(os.path.join(out, "metrics.json"), "w"), indent=1)
+    print("DONE", run_id, "clusters (optics):", res["clusters3_optics"], "(all):", res["clusters3_all"], flush=True)
+
+
 def load_all(data_dir, exp, device, smoke=False):
-    if smoke:
+    if data_dir is None:                                         # synthetic smoke data (no files)
         tr, va, te = smoke_data()
+    elif family(exp) == "F":
+        tr, va, te = load_fold(data_dir, int(exp[1:]))
     else:
         key = CFG[cfg_key(exp)]["train_key"]
         tr = load_split(data_dir, key); va = load_split(data_dir, "val"); te = load_split(data_dir, "test")
@@ -881,10 +1207,13 @@ def queue_worker(a, device):
         print(f"[{a.worker}] claimed {r} ({n_done}/{len(plan)} done)", flush=True)
         try:
             exp = parse_run(r)[0]
-            if exp not in data_cache:
-                data_cache.clear()
-                data_cache[exp] = load_all(None if a.smoke else find_data_dir(a.data), exp, device, a.smoke)
-            run_one(r, data_cache[exp], a.out, device, smoke=a.smoke)
+            if family(exp) == "X":
+                run_scan(r, data_dir_of(a), a.out, device)
+            else:
+                if exp not in data_cache:
+                    data_cache.clear()
+                    data_cache[exp] = load_all(data_dir_of(a), exp, device, a.smoke)
+                run_one(r, data_cache[exp], a.out, device, smoke=a.smoke)
         except Exception:
             err = _scrub(traceback.format_exc())
             print(f"[{a.worker}] ERROR in {r} (recorded in errors/, moving on):\n{err[-1500:]}", flush=True)
@@ -895,10 +1224,15 @@ def queue_worker(a, device):
             continue
         if not q.publish(r, a.out):
             pending.append(r)
-        if not q.upload_weights(r, a.out):
+        if family(parse_run(r)[0]) != "X" and not q.upload_weights(r, a.out):
             print(f"[{a.worker}] weights upload failed for {r} (kept in local output)", flush=True)
     for r in pending:                                          # final safety: retry unpublished results
         print(f"[{a.worker}] retry publish {r}:", q.publish(r, a.out), flush=True)
+
+
+def data_dir_of(a):
+    """Prepared-data folder; None means synthetic smoke data (--smoke without --data)."""
+    return find_data_dir(a.data) if (a.data or not a.smoke) else None
 
 
 def selftest():
@@ -908,7 +1242,7 @@ def selftest():
     for fam, runs in run_lists().items():
         for r in runs:
             exp, arm, s = parse_run(r)
-            assert family(exp) == fam, (r, fam)
+            assert family(exp) in (fam, "X"), (r, fam)
             assert "train_key" in CFG[cfg_key(exp)], r
             if arm != "scan":
                 make_arm(arm, s, (np.zeros(4), np.ones(4)))
@@ -942,13 +1276,17 @@ def main():
         CFG.update(budget=20, probe=8, pool_k=6, grid=(4, 4), emitters=2, emitter_batch=3, pop=10,
                    mc_teacher_acc=0.0, tmin=-20.0)
         runs = runs or [f"B-{x}-s0" for x in ARMS_B]
+        test_baselines()
     if a.queue:
         queue_worker(a, device); return
     data_cache = {}
     for r in runs:
         exp = parse_run(r)[0]
+        if family(exp) == "X":
+            run_scan(r, data_dir_of(a), a.out, device); continue
         if exp not in data_cache:
-            data_cache[exp] = load_all(None if a.smoke else find_data_dir(a.data), exp, device, a.smoke)
+            data_cache.clear()
+            data_cache[exp] = load_all(data_dir_of(a), exp, device, a.smoke)
         run_one(r, data_cache[exp], a.out, device, smoke=a.smoke)
 
 
